@@ -1,7 +1,8 @@
-from array import array
 import logging
-from typing import Optional, Tuple
+import configparser
 
+from typing import Optional, Tuple
+from array import array
 from telegram import __version__ as TG_VER
 
 try:
@@ -19,7 +20,7 @@ from telegram import Chat, ChatMember, ChatMemberUpdated, Update
 from telegram.constants import ParseMode
 from telegram.ext import Application, ChatMemberHandler, CommandHandler, ContextTypes
 
-# Enable logging
+
 
 logging.basicConfig(
     format="%(asctime)s - %(message)s", level=logging.INFO
@@ -85,19 +86,6 @@ async def track_chats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             logger.info("%s removed the bot from the channel %s", cause_name, chat.title)
             context.bot_data.setdefault("channel_ids", set()).discard(chat.id)
 
-
-async def show_chats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Shows which chats the bot is in"""
-    user_ids = ", ".join(str(uid) for uid in context.bot_data.setdefault("user_ids", set()))
-    group_ids = ", ".join(str(gid) for gid in context.bot_data.setdefault("group_ids", set()))
-    channel_ids = ", ".join(str(cid) for cid in context.bot_data.setdefault("channel_ids", set()))
-    text = (
-        f"@{context.bot.username} is currently in a conversation with the user IDs {user_ids}."
-        f" Moreover it is a member of the groups with IDs {group_ids} "
-        f"and administrator in the channels with IDs {channel_ids}."
-    )
-    await update.effective_message.reply_text(text)
-
 def get_whitelist() -> array:
     # Will pull list of allowed users from db in future.
     return [770539667, 155719408, 1378282982]
@@ -127,10 +115,10 @@ async def handle_chat_members(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
     if not was_member and is_member:
-        if validate_chat_member(member_id=member_id):
+        if validate_chat_member(member_id = member_id):
             await update.effective_chat.send_message(
-                f"{member_name} was added by {cause_name}. Welcome!",
-                parse_mode=ParseMode.HTML,
+                            f"{member_name} was added by {cause_name}. Welcome!",
+                            parse_mode=ParseMode.HTML,
             )
         else:
             logger.info(f"CHAT_ID ({chat_id}): " \
@@ -146,13 +134,18 @@ async def handle_chat_members(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 def main() -> None:
-    logger.info("Starting bot")
-    application = Application.builder().token("5747557099:AAHE7F-69x8H8yJJYKBPd55CtG3DvOGCKnI").build()
-    logger.info("Bot is running...")
-    application.add_handler(ChatMemberHandler(track_chats, ChatMemberHandler.MY_CHAT_MEMBER))
-    application.add_handler(CommandHandler("show_chats", show_chats))
-    application.add_handler(ChatMemberHandler(handle_chat_members, ChatMemberHandler.CHAT_MEMBER))
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    try:
+        config = configparser.ConfigParser()
+        config.read('config.ini.example')
+        token = config['DEFAULT']['TOKEN']
+        logger.info("Starting bot")
+        application = Application.builder().token(token).build()
+        logger.info("Bot is running...")
+        application.add_handler(ChatMemberHandler(track_chats, ChatMemberHandler.MY_CHAT_MEMBER))
+        application.add_handler(ChatMemberHandler(handle_chat_members, ChatMemberHandler.CHAT_MEMBER))
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
+    except Exception as error:
+        logger.fatal("Bot failed to start. Error: " + str(error))
     
 
 
