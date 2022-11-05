@@ -1,6 +1,8 @@
 import logging
 import configparser
 
+import pymongo
+
 from typing import Optional, Tuple
 from array import array
 from telegram import __version__ as TG_VER
@@ -28,7 +30,13 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-
+def get_users_collection():
+    client = pymongo.MongoClient()
+    db = client["database"]
+    col = db["users"]
+    col.create_index("user_id", unique=True)
+    return col
+    
 def extract_status_change(chat_member_update: ChatMemberUpdated) -> Optional[Tuple[bool, bool]]:
 
     status_change = chat_member_update.difference().get("status")
@@ -86,18 +94,15 @@ async def track_chats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             logger.info("%s removed the bot from the channel %s", cause_name, chat.title)
             context.bot_data.setdefault("channel_ids", set()).discard(chat.id)
 
-def get_whitelist() -> array:
-    # Will pull list of allowed users from db in future.
-    return [770539667, 155719408, 1378282982]
+def validate_chat_member(user_id: int) -> bool:
 
-def validate_chat_member(member_id: int) -> bool:
+    users_collection = get_users_collection()
     
-    white_list = get_whitelist()
-    
-    if member_id in white_list:
-        logger.info(f"Member {member_id} is in whitelist.")
+    ''' New better way to check if data exists in mongo db '''
+    if users_collection.count_documents({ 'user_id': str(user_id) }, limit = 1) != 0:
+        logger.info(f"Member {user_id} is in whitelist.")
         return True
-    logger.info(f"Member {member_id} is not in whitelist.")
+    logger.info(f"Member {user_id} is not in whitelist.")
     return False
 
 async def handle_chat_members(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -111,11 +116,11 @@ async def handle_chat_members(update: Update, context: ContextTypes.DEFAULT_TYPE
     chat_id = update.chat_member.chat.id
     cause_name = update.chat_member.from_user.mention_html()
     member_name = update.chat_member.new_chat_member.user.mention_html()
-    member_id = update.chat_member.new_chat_member.user.id
+    user_id = update.chat_member.new_chat_member.user.id
 
 
     if not was_member and is_member:
-        if validate_chat_member(member_id = member_id):
+        if validate_chat_member(user_id = user_id):
             await update.effective_chat.send_message(
                             f"{member_name} was added by {cause_name}. Welcome!",
                             parse_mode=ParseMode.HTML,
@@ -125,7 +130,7 @@ async def handle_chat_members(update: Update, context: ContextTypes.DEFAULT_TYPE
                  f"User {update.chat_member.new_chat_member.user.id}({update.chat_member.new_chat_member.user.first_name}) " \
                  f"has been baned. " \
                  "User not in whitelist!")
-            await update.effective_chat.ban_member(user_id=member_id)
+            await update.effective_chat.ban_member(user_id=user_id)
     elif was_member and not is_member :
         await update.effective_chat.send_message(
             f"{member_name} in gulag now. Thanks a lot, {cause_name} ...",
@@ -136,7 +141,7 @@ async def handle_chat_members(update: Update, context: ContextTypes.DEFAULT_TYPE
 def main() -> None:
     try:
         config = configparser.ConfigParser()
-        config.read('config.ini.example')
+        config.read('config.ini')
         token = config['DEFAULT']['TOKEN']
         logger.info("Starting bot")
         application = Application.builder().token(token).build()
