@@ -1,16 +1,11 @@
 # Guid
 
-1. Setup config
+1. Build keeper-bot image
 ```
-cp config.ini.example config.ini
+docker build keeper-bot -t keeper-bot
+```
+2. Start bot in container:
+```
+docker run -e MONGO_URL=<MONGO_URL> -e TG_TOKEN=<TG_TOKEN> keeper-bot
+```
 
-Than edit "config.ini" and insert you telegram bot api-token.
-```
-
-2. Start your bot
-```
-python -m venv venv
-source venv/bin/activate
-pip install -r requiremnets.txt
-python member-bot.py
-```

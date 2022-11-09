@@ -1,11 +1,12 @@
 import logging
 import configparser
-
+import os
 import pymongo
 
 from typing import Optional, Tuple
 from array import array
 from telegram import __version__ as TG_VER
+
 
 try:
     from telegram import __version_info__
@@ -20,27 +21,30 @@ if __version_info__ < (20, 0, 0, "alpha", 1):
     )
 from telegram import Chat, ChatMember, ChatMemberUpdated, Update
 from telegram.constants import ParseMode
-from telegram.ext import Application, ChatMemberHandler, CommandHandler, ContextTypes
-
+from telegram.ext import Application, ChatMemberHandler, ContextTypes
 
 
 logging.basicConfig(
-    format="%(asctime)s - %(message)s", level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 
 logger = logging.getLogger(__name__)
 
+
 def get_users_collection():
-    client = pymongo.MongoClient()
-    db = client["database"]
-    col = db["users"]
+
+    client = pymongo.MongoClient(MONGO_URL)
+    db = client["mipt"]
+    col = db["botdb"]
     col.create_index("user_id", unique=True)
     return col
-    
+
+
 def extract_status_change(chat_member_update: ChatMemberUpdated) -> Optional[Tuple[bool, bool]]:
 
     status_change = chat_member_update.difference().get("status")
-    old_is_member, new_is_member = chat_member_update.difference().get("is_member", (None, None))
+    old_is_member, new_is_member = chat_member_update.difference().get("is_member",
+                                                                       (None, None))
 
     if status_change is None:
         return None
@@ -61,7 +65,7 @@ def extract_status_change(chat_member_update: ChatMemberUpdated) -> Optional[Tup
 
 
 async def track_chats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
- 
+
     result = extract_status_change(update.my_chat_member)
     if result is None:
         return
@@ -81,34 +85,43 @@ async def track_chats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             context.bot_data.setdefault("user_ids", set()).discard(chat.id)
     elif chat.type in [Chat.GROUP, Chat.SUPERGROUP]:
         if not was_member and is_member:
-            logger.info("%s added the bot to the group %s", cause_name, chat.title)
+            logger.info(
+                f"Bot has been added to {chat.title}. Cause {cause_name}")
             context.bot_data.setdefault("group_ids", set()).add(chat.id)
         elif was_member and not is_member:
-            logger.info("%s removed the bot from the group %s", cause_name, chat.title)
+            logger.info("%s removed the bot from the group %s",
+                        cause_name, chat.title)
             context.bot_data.setdefault("group_ids", set()).discard(chat.id)
     else:
         if not was_member and is_member:
-            logger.info("%s added the bot to the channel %s", cause_name, chat.title)
+            logger.info("%s added the bot to the channel %s",
+                        cause_name, chat.title)
             context.bot_data.setdefault("channel_ids", set()).add(chat.id)
         elif was_member and not is_member:
-            logger.info("%s removed the bot from the channel %s", cause_name, chat.title)
+            logger.info("%s removed the bot from the channel %s",
+                        cause_name, chat.title)
             context.bot_data.setdefault("channel_ids", set()).discard(chat.id)
 
-def validate_chat_member(user_id: int) -> bool:
 
-    users_collection = get_users_collection()
-    
-    ''' New better way to check if data exists in mongo db '''
-    if users_collection.count_documents({ 'user_id': str(user_id) }, limit = 1) != 0:
-        logger.info(f"Member {user_id} is in whitelist.")
-        return True
-    logger.info(f"Member {user_id} is not in whitelist.")
-    return False
+def validate_chat_member(user_id: int) -> bool:
+    try:
+        users_collection = get_users_collection()
+
+        ''' New better way to check if data exists in mongo db '''
+        if users_collection.count_documents({'user_id': user_id}, limit=1) != 0:
+            logger.info(f"Member {user_id} is in whitelist.")
+            return True
+        logger.info(f"Member {user_id} is not in whitelist.")
+        return False
+    except Exception as e: 
+        logger.critical(f"{str(e)}")
+        return False
+
 
 async def handle_chat_members(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     result = extract_status_change(update.chat_member)
-    
+
     if result is None:
         return
 
@@ -118,20 +131,19 @@ async def handle_chat_members(update: Update, context: ContextTypes.DEFAULT_TYPE
     member_name = update.chat_member.new_chat_member.user.mention_html()
     user_id = update.chat_member.new_chat_member.user.id
 
-
     if not was_member and is_member:
-        if validate_chat_member(user_id = user_id):
+        if validate_chat_member(user_id=user_id):
             await update.effective_chat.send_message(
-                            f"{member_name} was added by {cause_name}. Welcome!",
-                            parse_mode=ParseMode.HTML,
+                f"{member_name} was added by {cause_name}. Welcome!",
+                parse_mode=ParseMode.HTML,
             )
         else:
-            logger.info(f"CHAT_ID ({chat_id}): " \
-                 f"User {update.chat_member.new_chat_member.user.id}({update.chat_member.new_chat_member.user.first_name}) " \
-                 f"has been baned. " \
-                 "User not in whitelist!")
+            logger.info(f"CHAT_ID ({chat_id}): "
+                        f"User {update.chat_member.new_chat_member.user.id}({update.chat_member.new_chat_member.user.first_name}) "
+                        f"has been baned. "
+                        "User not in whitelist!")
             await update.effective_chat.ban_member(user_id=user_id)
-    elif was_member and not is_member :
+    elif was_member and not is_member:
         await update.effective_chat.send_message(
             f"{member_name} in gulag now. Thanks a lot, {cause_name} ...",
             parse_mode=ParseMode.HTML,
@@ -140,19 +152,21 @@ async def handle_chat_members(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 def main() -> None:
     try:
-        config = configparser.ConfigParser()
-        config.read('config.ini')
-        token = config['DEFAULT']['TOKEN']
         logger.info("Starting bot")
-        application = Application.builder().token(token).build()
+        application = Application.builder().token(TG_TOKEN).build()
         logger.info("Bot is running...")
-        application.add_handler(ChatMemberHandler(track_chats, ChatMemberHandler.MY_CHAT_MEMBER))
-        application.add_handler(ChatMemberHandler(handle_chat_members, ChatMemberHandler.CHAT_MEMBER))
+        application.add_handler(ChatMemberHandler(
+            track_chats, ChatMemberHandler.MY_CHAT_MEMBER))
+        application.add_handler(ChatMemberHandler(
+            handle_chat_members, ChatMemberHandler.CHAT_MEMBER))
         application.run_polling(allowed_updates=Update.ALL_TYPES)
     except Exception as error:
         logger.fatal("Bot failed to start. Error: " + str(error))
-    
 
 
 if __name__ == "__main__":
+    
+    TG_TOKEN = os.environ['TG_TOKEN']
+    MONGO_URL = os.environ['MONGO_URL']
+
     main()
