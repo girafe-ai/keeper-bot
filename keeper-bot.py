@@ -28,14 +28,9 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 
-logger = logging.getLogger(__name__)
-
 
 def get_users_collection():
-
-    client = pymongo.MongoClient(MONGO_URL)
-    db = client["mipt"]
-    col = db["botdb"]
+    col = db["users"]
     col.create_index("user_id", unique=True)
     return col
 
@@ -103,17 +98,62 @@ async def track_chats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             context.bot_data.setdefault("channel_ids", set()).discard(chat.id)
 
 
-def validate_chat_member(user_id: int) -> bool:
+def list_all_groups_of_chat(chat):
     try:
-        users_collection = get_users_collection()
 
-        ''' New better way to check if data exists in mongo db '''
-        if users_collection.count_documents({'user_id': user_id}, limit=1) != 0:
-            logger.info(f"Member {user_id} is in whitelist.")
-            return True
+        collection = db[chat]
+        group_list = list(collection.find({}, {"_id": 0}))
+        if len(group_list) == 0:
+            logger.warning("there are no groups!")
+
+        return group_list
+
+    except Exception as error:
+        return str(error)
+
+
+def list_users_of_group(group_name, include_id={"_id": 0}):
+    try:
+        logger.info("listing users")
+        collection = get_users_collection()
+        users_list = list(collection.find(
+            {"group": {"$eq": group_name}}, include_id))
+        if len(users_list) == 0:
+            logger.warning("The users list is empty")
+        return users_list
+    except Exception as error:
+        logger.error(str(error))
+        return str(error)
+
+
+def check_chat_access(chat):
+    '''Check if collection exists'''
+    if chat not in db.list_collection_names():
+        return f'''Chat `{chat}` doesn't exist'''
+
+    groups_of_chat = list_all_groups_of_chat(chat=chat)
+    users_of_chat = []
+    for group_name in groups_of_chat:
+        users_of_chat.append(list_users_of_group(
+            group_name=group_name.get("name")))
+
+    return users_of_chat
+
+
+def validate_chat_member(user_id: int, chat_id: str) -> bool:
+    try:
+
+        groups_with_access = check_chat_access(chat=str(chat_id))
+        # logger.info(str(users_with_access))
+        for users_with_access in groups_with_access:
+            for user in users_with_access:
+                logger.info(f"{user}")
+                if user.get("user_id") == user_id:
+                    logger.info(f"Member {user_id} is in whitelist.")
+                    return True
         logger.info(f"Member {user_id} is not in whitelist.")
         return False
-    except Exception as e: 
+    except Exception as e:
         logger.critical(f"{str(e)}")
         return False
 
@@ -132,7 +172,7 @@ async def handle_chat_members(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_id = update.chat_member.new_chat_member.user.id
 
     if not was_member and is_member:
-        if validate_chat_member(user_id=user_id):
+        if validate_chat_member(user_id=user_id, chat_id=chat_id):
             await update.effective_chat.send_message(
                 f"{member_name} was added by {cause_name}. Welcome!",
                 parse_mode=ParseMode.HTML,
@@ -165,8 +205,11 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    
-    TG_TOKEN = os.environ['TG_TOKEN']
-    MONGO_URL = os.environ['MONGO_URL']
+
+    TG_TOKEN = '5747557099:AAHE7F-69x8H8yJJYKBPd55CtG3DvOGCKnI'
+    MONGO_URL = 'localhost:27017'
+    logger = logging.getLogger(__name__)
+    client = pymongo.MongoClient(MONGO_URL)
+    db = client["mipt"]
 
     main()
