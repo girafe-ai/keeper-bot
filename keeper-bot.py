@@ -206,8 +206,8 @@ def main() -> None:
 
 if __name__ == "__main__":
 
-    TG_TOKEN = '5747557099:AAHE7F-69x8H8yJJYKBPd55CtG3DvOGCKnI'
-    MONGO_URL = 'localhost:27017'
+    TG_TOKEN = os.environ.get("TG_TOKEN")
+    MONGO_URL = os.environ.get("MONGO_URL")
     logger = logging.getLogger(__name__)
     client = pymongo.MongoClient(MONGO_URL)
     db = client["mipt"]
