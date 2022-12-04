@@ -1,0 +1,9 @@
+Hi there! I am keeper bot for all of Girafe-ai telegram chats.
+As I can see you are able to join some of our chats @{{username}}!
+
+Here are invite links for them:
+
+{% for chat_name, chat_link in user_chats.items() -%}
+
+{{chat_name}}:  {{chat_link}}
+{% endfor %}

@@ -12,7 +12,6 @@ bot.
 """
 
 import logging
-import pymongo
 from typing import Optional, Tuple
 import jinja2
 
@@ -35,6 +34,8 @@ from telegram import Chat, ChatMember, ChatMemberUpdated, Update
 from telegram.constants import ParseMode
 from telegram.ext import Application, ChatMemberHandler, CommandHandler, ContextTypes, PicklePersistence
 
+import mongodb
+
 # Enable logging
 
 logging.basicConfig(
@@ -43,59 +44,19 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-def get_groups_collection():
-    client = pymongo.MongoClient()
-    mipt_db = client["mipt"]
-    collection = mipt_db["groups"]
-    return collection
-
-def get_users_collection():
-    client = pymongo.MongoClient()
-    mipt_db = client["mipt"]
-    collection = mipt_db["users"]
-    return collection
-
-def get_chats_collection():
-    client = pymongo.MongoClient()
-    mipt_db = client["mipt"]
-    collection = mipt_db["chats"]
-    return collection
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = update.message.from_user
     logger.info("User ID is: %s, User nickname is: %s", user.id, user.username)
 
-    users_col = get_users_collection()
-    groups_col = get_groups_collection()
-    chats_col = get_chats_collection()
+    dbchats = mongodb.get_user_chats(user)
 
-    try:
-        user_query = {"_id": user.username}
-        dbuser = users_col.find_one(user_query)
-        logger.info(f"... successfully found user in collection! {dbuser}")
-
-        groups_query = {"user_ids": user.username}
-        dbgroups = [group for group in groups_col.find(groups_query)]
-        logger.info(f"... successfully found groups in collection! {dbgroups}")
-        dbgroup_names = [group["_id"] for group in dbgroups]
-
-        chats_query = {"$or": [{"allowed_users": user.username},{"allowed_groups": dbgroup_names}]}
-        # chats_query = {"allowed_groups": dbgroup_names}
-        dbchats = [chat for chat in chats_col.find(chats_query)]
-        logger.info(f"... successfully found groups in collection! {dbchats}")
-        chat_tgids = [chat.get('tg_id') for chat in dbchats]
-        logger.info(f".tg_ids are: {chat_tgids}")
-        invite_links = []
-        for dbchat in dbchats:
-            if not dbchat.get("tg_id"):
-                continue
-            invite_link = await context.bot.create_chat_invite_link(chat_id=dbchat["tg_id"])
-            invite_links.append((dbchat["_id"], invite_link.invite_link))
-            logger.info(f"I GOT INVITE LINK {invite_link}")
-
-    except Exception as e:
-        logger.exception("... user does not exists!")
-
+    invite_links = []
+    for dbchat in dbchats:
+        if not dbchat.get("tg_id"):
+            continue
+        invite_link = await context.bot.create_chat_invite_link(chat_id=dbchat["tg_id"])
+        invite_links.append((dbchat["_id"], invite_link.invite_link))
+        logger.info(f"I GOT INVITE LINK {invite_link}")
 
     template_string = """
 Greetings @{{ username }}! I am keeper bot for all of Girafe-ai telegram chats.
@@ -108,6 +69,7 @@ Your invite links:
 {{ chat_name }}:  {{ chat_link }}
 {% endfor %}
     """
+
     environment = jinja2.Environment()
     template = environment.from_string(template_string)
     text = template.render(username=user.username, user_chats=invite_links)
@@ -162,16 +124,8 @@ async def track_chats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     # Let's check who is responsible for the change
     cause_name = update.effective_user.full_name
 
-    # Handle chat types differently:
     chat = update.effective_chat
-    if chat.type == Chat.PRIVATE:
-        if not was_member and is_member:
-            logger.info("%s started the bot", cause_name)
-            context.bot_data.setdefault("user_ids", set()).add(chat.id)
-        elif was_member and not is_member:
-            logger.info("%s blocked the bot", cause_name)
-            context.bot_data.setdefault("user_ids", set()).discard(chat.id)
-    elif chat.type in [Chat.GROUP, Chat.SUPERGROUP]:
+    if chat.type in [Chat.GROUP, Chat.SUPERGROUP]:
         if not was_member and is_member:
             logger.info("%s added the bot to the group %s", cause_name, chat)
             update_chat_status(chat)
@@ -179,14 +133,6 @@ async def track_chats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         elif was_member and not is_member:
             logger.info("%s removed the bot from the group %s", cause_name, chat.title)
             context.bot_data.setdefault("group_ids", set()).discard(chat.id)
-    else:
-        if not was_member and is_member:
-            logger.info("%s added the bot to the channel %s", cause_name, chat.title)
-            context.bot_data.setdefault("channel_ids", set()).add(chat.id)
-        elif was_member and not is_member:
-            logger.info("%s removed the bot from the channel %s", cause_name, chat.title)
-            context.bot_data.setdefault("channel_ids", set()).discard(chat.id)
-
 
 async def show_chats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Shows which chats the bot is in"""
@@ -198,15 +144,22 @@ async def show_chats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         f" Moreover it is a member of the groups with IDs {group_ids} "
         f"and administrator in the channels with IDs {channel_ids}."
     )
-    # collection = get_chats_collection()
-
-    # chats_to_be = list()
-
-    # cursor = collection.find({})
-    # for document in cursor:
-    #     chats_to_be
-
     await update.effective_message.reply_text(text)
+
+def check_user(user, chat):
+    logger.info("CHecking User with ID: %s and nickname: %s", user.id, user.username)
+    try:
+        dbchats = mongodb.get_user_chats(user)
+        dbchat_ids = [chat.get("tg_id") for chat in dbchats]
+
+        if chat.id in dbchat_ids:
+            return True
+        else:
+            return False
+
+    except Exception as e:
+        logger.exception(str(e))
+        raise(e)
 
 
 async def greet_chat_members(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -215,21 +168,56 @@ async def greet_chat_members(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if result is None:
         return
 
+    user = update.chat_member.new_chat_member.user
+    chat = update.effective_chat
+
+    is_allowed = check_user(user, chat)
+    logger.info(str(is_allowed))
     was_member, is_member = result
     cause_name = update.chat_member.from_user.mention_html()
     member_name = update.chat_member.new_chat_member.user.mention_html()
 
     if not was_member and is_member:
-        await update.effective_chat.send_message(
-            f"{member_name} was added by {cause_name}. Welcome!",
-            parse_mode=ParseMode.HTML,
-        )
+        if is_allowed:
+            await update.effective_chat.send_message(
+                f"{member_name} was added by {cause_name}. YOU ARE ALLOWED! Welcome!",
+                parse_mode=ParseMode.HTML,
+            )
+        else:
+            admins = await chat.get_administrators()
+            for admin in admins:
+                try:
+                    await admin.user.send_message(
+                        f"{member_name} was added by {cause_name} to chat named {chat.title} and HE IS NOT ALLOWED THERE!",
+                        parse_mode=ParseMode.HTML,
+                    )
+                except Exception as e:
+                    logger.error(str(e))
+                    continue
+
     elif was_member and not is_member:
         await update.effective_chat.send_message(
             f"{member_name} is no longer with us. Thanks a lot, {cause_name} ...",
             parse_mode=ParseMode.HTML,
         )
 
+
+async def doctor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+
+    managed_chats = mongodb.get_managed_chats()
+    if len(managed_chats) == 0:
+        await update.effective_chat.send_message(
+            f"sorry there are no any chats I have to keep eye on"
+        )
+    else:
+        logger.info(f"starting to heal context storage")
+        try:
+            for chat in managed_chats:
+                tg_id = chat["tg_id"]
+                logger.info(f"adding {tg_id} to storage")
+                context.bot_data.setdefault("group_ids", set()).add(chat["tg_id"])
+        except Exception as e:
+            logger.error(str(e))
 
 def main() -> None:
     """Start the bot."""
@@ -239,6 +227,9 @@ def main() -> None:
 
     start_handler = CommandHandler('start', start)
     application.add_handler(start_handler)
+
+    doctor_handler = CommandHandler('doctor', doctor)
+    application.add_handler(doctor_handler)
 
     # Keep track of which chats the bot is in
     application.add_handler(ChatMemberHandler(track_chats, ChatMemberHandler.MY_CHAT_MEMBER))
