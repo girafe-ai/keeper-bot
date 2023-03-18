@@ -45,6 +45,25 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+def get_groups_collection():
+    client = pymongo.MongoClient()
+    mipt_db = client["mipt"]
+    collection = mipt_db["groups"]
+    return collection
+
+def get_users_collection():
+    client = pymongo.MongoClient()
+    mipt_db = client["mipt"]
+    collection = mipt_db["users"]
+    return collection
+
+def get_chats_collection():
+    client = pymongo.MongoClient()
+    mipt_db = client["mipt"]
+    collection = mipt_db["chats"]
+    return collection
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = update.message.from_user
     logger.info("User ID is: %s, User nickname is: %s", user.id, user.username)
@@ -56,11 +75,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         if not dbchat.get("tg_id"):
             continue
         invite_link = await context.bot.create_chat_invite_link(chat_id=dbchat["tg_id"])
-        invite_links.append((dbchat["_id"], invite_link.invite_link))
+        invite_links.append((dbchat["name"], invite_link.invite_link))
         logger.info(f"I GOT INVITE LINK {invite_link}")
 
     template_string = """
-Greetings @{{ username }}! I am keeper bot for all of Girafe-ai telegram chats.
+Greetings @{{ username }}!
+I am keeper bot for all of Girafe-ai telegram chats.
 And as far as I know you can join some of them!
 
 Your invite links:
@@ -115,6 +135,41 @@ def update_chat_status(chat):
 
     logger.info(f"... successfully updated chats in collection!")
 
+async def check_chats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    managed_chats = mongodb.get_managed_chats()
+    if len(managed_chats) == 0:
+        await update.effective_chat.send_message(
+            f"sorry there are no any chats I have to keep eye on"
+        )
+    else:
+        logger.info(f"started to look for susp chat members")
+        try:
+            for chat in managed_chats:
+                tg_id = chat["tg_id"]
+                current_chat_members = mongodb.get_current_chat_members(tg_id)
+                allowed_chat_members = mongodb.get_allowed_chat_members(tg_id)
+                susp_chat_member_ids = current_chat_members.difference(allowed_chat_members)
+                logger.info(f"susp chat members are {susp_chat_member_ids}")
+                members = list()
+                for member_id in susp_chat_member_ids:
+                    # member = mongodb.get_user(member_id)
+                    member = await context.bot.get_chat_member(tg_id, member_id)
+                    if member.user.username:
+                        members.append('@' + member.user.username)
+                    else:
+                        members.append(member.user.id)
+                text = f"for chat {chat['name']} suspicious members are: {members}"
+                # context.bot_data.setdefault(
+                #     "group_ids",
+                #     set()
+                # ).add(chat["tg_id"])
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=text)
+
+        except Exception as e:
+            logger.error(str(e))
+
+
+
 async def track_chats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Tracks the chats the bot is in."""
     result = extract_status_change(update.my_chat_member)
@@ -137,15 +192,39 @@ async def track_chats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 async def show_chats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Shows which chats the bot is in"""
-    user_ids = ", ".join(str(uid) for uid in context.bot_data.setdefault("user_ids", set()))
+    # user_ids = ", ".join(str(uid) for uid in context.bot_data.setdefault("user_ids", set()))
     group_ids = ", ".join(str(gid) for gid in context.bot_data.setdefault("group_ids", set()))
-    channel_ids = ", ".join(str(cid) for cid in context.bot_data.setdefault("channel_ids", set()))
-    text = (
-        f"@{context.bot.username} is currently in a conversation with the user IDs {user_ids}."
-        f" Moreover it is a member of the groups with IDs {group_ids} "
-        f"and administrator in the channels with IDs {channel_ids}."
-    )
-    await update.effective_message.reply_text(text)
+
+    groups = list()
+    for group_id in context.bot_data.setdefault("group_ids", set()):
+        logger.info(f"currently searching for group with id {group_id}")
+        group = await context.bot.get_chat(group_id)
+        groups.append((group.title, group.id))
+
+    # channel_ids = ", ".join(str(cid) for cid in context.bot_data.setdefault("channel_ids", set()))
+    template_string = """
+I am keeper bot for all of Girafe-ai telegram chats.
+Currently I've been added to following groups:
+
+{% for group_name, group_id in groups -%}
+
+{{ group_name }}:  {{ group_id }}
+{% endfor %}
+    """
+
+
+    environment = jinja2.Environment()
+    template = environment.from_string(template_string)
+    text = template.render(groups=groups)
+
+    await context.bot.send_message(chat_id=update.effective_chat.id, text=text)
+
+    # text = (
+    #     f"@{context.bot.username} is currently in a conversation with the user IDs {user_ids}."
+    #     f" Moreover it is a member of the groups with IDs {group_ids} "
+    #     f"and administrator in the channels with IDs {channel_ids}."
+    # )
+    # await update.effective_message.reply_text(text)
 
 def check_user(user, chat):
     logger.info("CHecking User with ID: %s and nickname: %s", user.id, user.username)
@@ -202,6 +281,10 @@ async def greet_chat_members(update: Update, context: ContextTypes.DEFAULT_TYPE)
             parse_mode=ParseMode.HTML,
         )
 
+# async def check_chats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+#     managed_chats = mongodb.get_managed_chats()
+#     for managed_chat in managed_chats:
+
 
 async def doctor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
@@ -245,8 +328,14 @@ def main() -> None:
     start_handler = CommandHandler('start', start)
     application.add_handler(start_handler)
 
+    mychats_handler = CommandHandler('mychats', start)
+    application.add_handler(mychats_handler)
+
     doctor_handler = CommandHandler('doctor', doctor)
     application.add_handler(doctor_handler)
+
+    checkchats_handler = CommandHandler('check_chats', check_chats)
+    application.add_handler(checkchats_handler)
 
     # Keep track of which chats the bot is in
     application.add_handler(
