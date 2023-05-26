@@ -72,12 +72,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
     invite_links = []
     for dbchat in dbchats:
-        if not dbchat.get("tg_id"):
-            continue
-        invite_link = await context.bot.create_chat_invite_link(chat_id=dbchat["tg_id"])
-        invite_links.append((dbchat["name"], invite_link.invite_link))
-        logger.info(f"I GOT INVITE LINK {invite_link}")
-
+        try:
+            if not dbchat.get("tg_id"):
+                continue
+            invite_link = await context.bot.create_chat_invite_link(chat_id=dbchat["tg_id"])
+            invite_links.append((dbchat["name"], invite_link.invite_link))
+            logger.info(f"I GOT INVITE LINK {invite_link}")
+        except Exception as e:
+            logger.error(e)
     template_string = """
 Greetings @{{ username }}!
 I am keeper bot for all of Girafe-ai telegram chats.
@@ -168,8 +170,6 @@ async def check_chats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         except Exception as e:
             logger.error(str(e))
 
-
-
 async def track_chats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Tracks the chats the bot is in."""
     result = extract_status_change(update.my_chat_member)
@@ -242,6 +242,14 @@ def check_user(user, chat):
         raise(e)
 
 
+
+# async def create_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
+#     None:
+
+#     await context.bot.send_message(chat_id=update.effective_chat.id, text=text)
+
+
+
 async def greet_chat_members(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Greets new users in chats and announces when someone leaves"""
     result = extract_status_change(update.chat_member)
@@ -277,7 +285,7 @@ async def greet_chat_members(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     elif was_member and not is_member:
         await update.effective_chat.send_message(
-            f"{member_name} is no longer with us. Thanks a lot, {cause_name} ...",
+            f"{member_name} has left the chat. Сiao, {cause_name}!",
             parse_mode=ParseMode.HTML,
         )
 
